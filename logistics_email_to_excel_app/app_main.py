@@ -338,7 +338,11 @@ def suggest_mapping(df_cols: List[str]) -> Dict[str, str]:
     return mapping
 
 # ---------- Right column: Processing & Preview ----------
-with colR:
+buf = io.BytesIO()
+with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    new_df.to_excel(writer, index=False, sheet_name=sn)
+buf.seek(0)
+
 if email_blob.strip():
     is_table = looks_tabular(email_blob)
     base_df, sn = load_excel_to_df(xlsx_file)
