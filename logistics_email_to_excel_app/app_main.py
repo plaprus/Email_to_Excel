@@ -104,7 +104,7 @@ def extract_fields(email_text: str) -> Parsed:
         fields["volume_m3"] = norm_number(m.group(1)); debug["volume_m3"] = m.group(0)
 
     # Dimensions
-   m = re.search(r"(?:dims?|dimensions|wymiary)\s*[:=-]?\s*(\d+(?:[.,]\d+)*)\s*[x×]\s*(\d+(?:[.,]\d+)*)\s*[x×]\s*(\d+(?:[.,]\d+)*)\s*(mm|cm|m)?\b", lower)
+        m = re.search(r"(?:dims?|dimensions|wymiary)\s*[:=-]?\s*(\d+(?:[.,]\d+)*)\s*[x×]\s*(\d+(?:[.,]\d+)*)\s*[x×]\s*(\d+(?:[.,]\d+)*)\s*(mm|cm|m)?\b", lower)
     if m:
         L, W, H = map(norm_number, [m.group(1), m.group(2), m.group(3)])
         unit = m.group(4) or ""
