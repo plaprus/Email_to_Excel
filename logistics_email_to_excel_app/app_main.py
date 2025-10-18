@@ -338,83 +338,34 @@ def suggest_mapping(df_cols: List[str]) -> Dict[str, str]:
     return mapping
 
 # ---------- Right column: Processing & Preview ----------
+# --- PREVIEW ---
+st.subheader("Detected rows (preview)")
+st.dataframe(preview_df, use_container_width=True)
+
+# --- SAVE TO EXCEL (SAFE) ---
+new_df = pd.concat([base_df, preview_df], ignore_index=True)
+
 buf = io.BytesIO()
+safe_sheet = (sn or "Sheet1")[:31]  # Excel ma limit 31 znaków na nazwę arkusza
 with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-    new_df.to_excel(writer, index=False, sheet_name=sn)
+    # Zapisz dane do arkusza
+    new_df.to_excel(writer, index=False, sheet_name=safe_sheet)
+    # Upewnij się, że arkusze są widoczne i ustaw pierwszy jako aktywny
+    wb = writer.book
+    for ws in wb.worksheets:
+        ws.sheet_state = "visible"
+    wb.active = 0  # pierwszy arkusz aktywny
+
 buf.seek(0)
 
-if email_blob.strip():
-    is_table = looks_tabular(email_blob)
-    base_df, sn = load_excel_to_df(xlsx_file)
+st.success(f"✅ Prepared {len(preview_df)} row(s). Download updated Excel below.")
+st.download_button(
+    "⬇️ Download updated Excel",
+    data=buf.getvalue(),
+    file_name="orders_updated.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
-    if is_table:
-        # Tryb tablicowy - wklejona tabela z Excela
-        table_df = parse_tabular_text_to_df(email_blob)
-
-        prop_map = {
-            "country": "Country",
-            "city": "City",
-            "shipment_mode": "Shipment mode",
-            "weight_band": "Weight Band",
-            "origin_country": "Origin Country",
-            "origin_city": "Origin City*",
-            "origin_rate_per_shipment": "Origin Rate per Shipment",
-            "origin_rate_per_kg_or_container": "Origin Rate per KG / Per Container",
-            "port_to_port_air_per_kg": "Port -to Port Air (per KG)",
-            "port_to_port_ocean_per_cntr": "Ocean (Per Cntr)",
-            "transit_time": "Transit time",
-            "port_to_door_dest_per_kg_or_cntr": "Port to Door Rate (Destination per KG for AIR / per CNTR for OCEAN)**",
-            "port_to_door_dest_per_shipment": "Port to Door Rate (Destination per shipment)**",
-        }
-
-        # upewnij się, że wymagane kolumny istnieją
-        base_df = ensure_required_columns(base_df)
-
-        out_rows = []
-        for _, r in table_df.iterrows():
-            row = {col: None for col in base_df.columns}
-            for k, excel_col in prop_map.items():
-                if k in table_df.columns and excel_col in base_df.columns:
-                    row[excel_col] = r.get(k)
-            out_rows.append(row)
-
-        preview_df = pd.DataFrame(out_rows)
-
-    else:
-        # Tryb klasyczny - opisowy mail z polami Origin/Destination
-        prop_map = {
-            "destination_country": "Country",
-            "destination_city": "City",
-            "shipment_mode": "Shipment mode",
-            "weight_band": "Weight Band",
-            "origin_country": "Origin Country",
-            "origin_city": "Origin City*",
-            "date": "Date",
-            "weight_kg": "Weight (kg)",
-            "volume_m3": "Volume (m3)",
-            "dimensions": "Dimensions",
-            "rate_per_km": "Rate (PLN/km)",
-            "distance_km": "Distance (km)",
-            "total_cost": "Total (PLN)",
-        }
-        # ... (tu zostaw Twój dotychczasowy kod, który buduje rows -> preview_df)
-
-    # wspólna część: podgląd i zapis do Excela
-    st.subheader("Detected rows (preview)")
-    st.dataframe(preview_df, use_container_width=True)
-
-    new_df = pd.concat([base_df, preview_df], ignore_index=True)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        new_df.to_excel(writer, index=False, sheet_name=sn)
-    buf.seek(0)
-    st.success(f"✅ Prepared {len(preview_df)} row(s). Download updated Excel below.")
-    st.download_button(
-        "⬇️ Download updated Excel",
-        data=buf.getvalue(),
-        file_name="orders_updated.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
     with st.expander("🔎 Matching details (debug)"):
             for i, dbg in enumerate(debugs, start=1):
                 st.markdown(f"**Email {i}:**")
