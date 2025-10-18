@@ -403,9 +403,9 @@ if email_blob.strip():
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         new_df.to_excel(writer, index=False, sheet_name=sn)
-        buf.seek(0)
-        st.success(f"✅ Prepared {len(preview_df)} row(s). Download updated Excel below.")
-        st.download_button(
+    buf.seek(0)
+    st.success(f"✅ Prepared {len(preview_df)} row(s). Download updated Excel below.")
+    st.download_button(
         "⬇️ Download updated Excel",
         data=buf.getvalue(),
         file_name="orders_updated.xlsx",
