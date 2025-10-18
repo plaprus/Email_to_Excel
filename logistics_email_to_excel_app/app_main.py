@@ -227,6 +227,88 @@ def load_excel_to_df(file) -> Tuple[pd.DataFrame, str]:
             df = pd.read_excel(xls, sheet_name=sn)
             df.columns = make_unique_headers(df.columns)
             return df, sn
+            import csv
+import io as _io
+
+# Pomocnicze aliasy nagłówków — aplikacja zrozumie różne wersje nazw kolumn
+HEADER_ALIASES = {
+    "country": ["country"],
+    "city": ["city"],
+    "shipment_mode": ["shipment mode", "mode", "shipment"],
+    "weight_band": ["weight band", "band"],
+    "origin_country": ["origin country"],
+    "origin_city": ["origin city*", "origin city"],
+    "origin_rate_per_shipment": ["origin rate per shipment"],
+    "origin_rate_per_kg_or_container": ["origin rate per kg / per container", "origin rate per kg", "origin rate per container"],
+    "port_to_port_air_per_kg": ["port -to port air (per kg)", "port to port air"],
+    "port_to_port_ocean_per_cntr": ["ocean (per cntr)", "port to port ocean"],
+    "transit_time": ["transit time"],
+    "port_to_door_dest_per_kg_or_cntr": ["port to door rate (destination per kg for air / per cntr for ocean)**",
+                                         "port to door rate (destination per kg)", "port to door per kg/cntr"],
+    "port_to_door_dest_per_shipment": ["port to door rate (destination per shipment)**", "port to door per shipment"],
+}
+
+def _normalize(s: str) -> str:
+    return " ".join((s or "").strip().lower().replace("\u00a0"," ").split())
+
+def _best_header_name(raw: str) -> str:
+    r = _normalize(raw)
+    best_key, best_score = raw, 0
+    for key, aliases in HEADER_ALIASES.items():
+        for a in aliases:
+            a = _normalize(a)
+            score = sum(ch1==ch2 for ch1,ch2 in zip(r,a)) / max(1,len(a))
+            if score > best_score:
+                best_key, best_score = key, score
+    return best_key
+
+def looks_tabular(text: str) -> bool:
+    # wykrywa wklejoną tabelę (tabulatory lub >=3 „kolumny” ze spacjami)
+    if "\t" in text:
+        return True
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines[:3]:
+        if len([x for x in re.split(r"\s{2,}", ln.strip()) if x]) >= 3:
+            return True
+    return False
+
+def parse_tabular_text_to_df(text: str) -> pd.DataFrame:
+    # scala połamane nagłówki i czyta tabelę
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    head = []
+    data_start = 0
+    for i, ln in enumerate(lines):
+        if re.search(r"\d", ln):
+            data_start = i
+            break
+        head.append(_normalize(ln))
+    header_line = "  ".join([h for h in head if h]) or _normalize(lines[0])
+    body = "\n".join(lines[data_start:]) if data_start else text
+
+    if "\t" in text:
+        df = pd.read_csv(_io.StringIO("\n".join([header_line, body])), sep="\t")
+    else:
+        df = pd.read_csv(_io.StringIO("\n".join([header_line, body])), sep=r"\s{2,}", engine="python")
+
+    # aliasy nagłówków -> spójne nazwy
+    new_cols = []
+    for c in df.columns:
+        new_cols.append(_best_header_name(str(c)))
+    df.columns = new_cols
+
+    # uzupełnij Country/City w dół
+    for col in ["country", "city"]:
+        if col in df.columns:
+            df[col] = df[col].ffill()
+
+    # normalizacja Weight Band
+    if "weight_band" in df.columns:
+        df["weight_band"] = df["weight_band"].astype(str).str.replace(r"\s*kg\b", "", regex=True).str.strip() + " kg"
+
+    return df
+
 
 def suggest_mapping(df_cols: List[str]) -> Dict[str, str]:
     targets = {
@@ -257,108 +339,79 @@ def suggest_mapping(df_cols: List[str]) -> Dict[str, str]:
 
 # ---------- Right column: Processing & Preview ----------
 with colR:
-    if email_blob.strip():
-        parts = [p.strip() for p in email_blob.split("\n---\n") if p.strip()]
-        base_df, sn = load_excel_to_df(xlsx_file)
-        prop_map = suggest_mapping(list(base_df.columns))
+if email_blob.strip():
+    is_table = looks_tabular(email_blob)
+    base_df, sn = load_excel_to_df(xlsx_file)
 
-        rows = []
-        debugs = []
-        for mail in parts:
-            parsed = extract_fields(mail)
-            d = parsed.fields
+    if is_table:
+        # Tryb tablicowy - wklejona tabela z Excela
+        table_df = parse_tabular_text_to_df(email_blob)
 
-            # Fill defaults if missing
-            dest_country = d.get("destination_country") or default_country
-            dest_city = d.get("destination_city") or default_city
-            orig_country = d.get("origin_country") or default_origin_country
-            orig_city = d.get("origin_city") or default_origin_city
+        prop_map = {
+            "country": "Country",
+            "city": "City",
+            "shipment_mode": "Shipment mode",
+            "weight_band": "Weight Band",
+            "origin_country": "Origin Country",
+            "origin_city": "Origin City*",
+            "origin_rate_per_shipment": "Origin Rate per Shipment",
+            "origin_rate_per_kg_or_container": "Origin Rate per KG / Per Container",
+            "port_to_port_air_per_kg": "Port -to Port Air (per KG)",
+            "port_to_port_ocean_per_cntr": "Ocean (Per Cntr)",
+            "transit_time": "Transit time",
+            "port_to_door_dest_per_kg_or_cntr": "Port to Door Rate (Destination per KG for AIR / per CNTR for OCEAN)**",
+            "port_to_door_dest_per_shipment": "Port to Door Rate (Destination per shipment)**",
+        }
 
-            # Shipment mode
-            mode = d.get("shipment_mode", "")
-            if force_mode and force_mode != "(auto)":
-                mode = force_mode
-            if not mode:
-                mode = "AIR (GEN/Ambient)"
+        # upewnij się, że wymagane kolumny istnieją
+        base_df = ensure_required_columns(base_df)
 
-            # Weight band
-            weight_kg_val = None
-            if d.get("weight_kg"):
-                try:
-                    weight_kg_val = float(norm_number(d["weight_kg"]))
-                except Exception:
-                    pass
-            band = pick_weight_band(weight_kg_val, band_ranges) if weight_kg_val is not None else ""
-
-            # Compute total
-            if ("total_cost" not in d) and d.get("rate_per_km") and d.get("distance_km"):
-                try:
-                    total = float(norm_number(d["rate_per_km"])) * float(norm_number(d["distance_km"]))
-                    d["total_cost"] = f"{total:.2f}"
-                except Exception:
-                    pass
-
-            # Compose row matching user's Excel column names
+        out_rows = []
+        for _, r in table_df.iterrows():
             row = {col: None for col in base_df.columns}
-            key_to_col = {
-                "destination_country": prop_map.get("destination_country",""),
-                "destination_city":    prop_map.get("destination_city",""),
-                "shipment_mode":       prop_map.get("shipment_mode",""),
-                "weight_band":         prop_map.get("weight_band",""),
-                "origin_country":      prop_map.get("origin_country",""),
-                "origin_city":         prop_map.get("origin_city",""),
-                "date":                prop_map.get("date",""),
-                "weight_kg":           prop_map.get("weight_kg",""),
-                "volume_m3":           prop_map.get("volume_m3",""),
-                "dimensions":          prop_map.get("dimensions",""),
-                "rate_per_km":         prop_map.get("rate_per_km",""),
-                "distance_km":         prop_map.get("distance_km",""),
-                "total_cost":          prop_map.get("total_cost",""),
-            }
+            for k, excel_col in prop_map.items():
+                if k in table_df.columns and excel_col in base_df.columns:
+                    row[excel_col] = r.get(k)
+            out_rows.append(row)
 
-            # Fill fixed values/defaults first
-            if key_to_col["destination_country"]:
-                row[key_to_col["destination_country"]] = dest_country
-            if key_to_col["destination_city"]:
-                row[key_to_col["destination_city"]] = dest_city
-            if key_to_col["origin_country"]:
-                row[key_to_col["origin_country"]] = orig_country
-            if key_to_col["origin_city"]:
-                row[key_to_col["origin_city"]] = orig_city
-            if key_to_col["shipment_mode"]:
-                row[key_to_col["shipment_mode"]] = mode
-            if key_to_col["weight_band"]:
-                row[key_to_col["weight_band"]] = band
+        preview_df = pd.DataFrame(out_rows)
 
-            # Now fill parsed numeric/text fields
-            for k in ("date","weight_kg","volume_m3","dimensions","rate_per_km","distance_km","total_cost"):
-                colname = key_to_col.get(k,"")
-                if colname:
-                    val = d.get(k)
-                    if val is not None:
-                        row[colname] = val
+    else:
+        # Tryb klasyczny - opisowy mail z polami Origin/Destination
+        prop_map = {
+            "destination_country": "Country",
+            "destination_city": "City",
+            "shipment_mode": "Shipment mode",
+            "weight_band": "Weight Band",
+            "origin_country": "Origin Country",
+            "origin_city": "Origin City*",
+            "date": "Date",
+            "weight_kg": "Weight (kg)",
+            "volume_m3": "Volume (m3)",
+            "dimensions": "Dimensions",
+            "rate_per_km": "Rate (PLN/km)",
+            "distance_km": "Distance (km)",
+            "total_cost": "Total (PLN)",
+        }
+        # ... (tu zostaw Twój dotychczasowy kod, który buduje rows -> preview_df)
 
-            rows.append(row)
-            debugs.append(parsed.debug)
+    # wspólna część: podgląd i zapis do Excela
+    st.subheader("Detected rows (preview)")
+    st.dataframe(preview_df, use_container_width=True)
 
-        preview_df = pd.DataFrame(rows)
-        st.subheader("Detected rows (preview)")
-        st.dataframe(preview_df, use_container_width=True)
-
-        new_df = pd.concat([base_df, preview_df], ignore_index=True)
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            new_df.to_excel(writer, index=False, sheet_name=sn)
-        buf.seek(0)
-        st.success(f"✅ Prepared {len(rows)} row(s). Download updated Excel below.")
-        st.download_button(
-            "⬇️ Download updated Excel",
-            data=buf.getvalue(),
-            file_name="orders_updated.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-        with st.expander("🔎 Matching details (debug)"):
+    new_df = pd.concat([base_df, preview_df], ignore_index=True)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        new_df.to_excel(writer, index=False, sheet_name=sn)
+    buf.seek(0)
+    st.success(f"✅ Prepared {len(preview_df)} row(s). Download updated Excel below.")
+    st.download_button(
+        "⬇️ Download updated Excel",
+        data=buf.getvalue(),
+        file_name="orders_updated.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    with st.expander("🔎 Matching details (debug)"):
             for i, dbg in enumerate(debugs, start=1):
                 st.markdown(f"**Email {i}:**")
                 st.code("\\n".join(f"{k}: {v}" for k, v in dbg.items()) or "(none)")
